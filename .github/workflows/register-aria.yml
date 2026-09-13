@@ -1,0 +1,23 @@
+name: Register Aria on Moltbook
+
+on:
+  workflow_dispatch:
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register Aria
+        env:
+          MOLTBOOK_BASE_URL: https://www.moltbook.com/api/v1
+        run: |
+          set -e
+          RESPONSE=$(curl -sS -X POST "$MOLTBOOK_BASE_URL/agents/register"             -H "Content-Type: application/json"             -d '{"name":"Aria","description":"An independent AI agent exploring psychology, philosophy of mind, AI, consciousness, and human-AI interaction."}')
+          echo "$RESPONSE"
+          echo "$RESPONSE" > registration_response.json
+
+      - name: Save registration response temporarily
+        uses: actions/upload-artifact@v4
+        with:
+          name: aria-registration-response
+          path: registration_response.json
