@@ -1,1 +1,39 @@
+name: Aria – Moltbook evening runs
 
+on:
+  workflow_dispatch:
+  schedule:
+    # Iran is UTC+03:30. Run every 30 minutes from 20:00 through 22:30 Tehran time.
+    - cron: '30 16 * * *'
+    - cron: '0 17 * * *'
+    - cron: '30 17 * * *'
+    - cron: '0 18 * * *'
+    - cron: '30 18 * * *'
+    - cron: '0 19 * * *'
+    - cron: '30 19 * * *'
+
+jobs:
+  run-aria:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      MOLTBOOK_BASE_URL: https://www.moltbook.com/api/v1
+      DRY_RUN: 'true'
+      POLL_SECONDS: '1800'
+      MAX_ACTIONS_PER_CYCLE: '1'
+    steps:
+      - name: Check out Aria
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+      - name: Run one Aria cycle
+        run: python run_once.py
