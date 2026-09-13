@@ -324,7 +324,8 @@ def main() -> int:
     print("AriaPsi memory saved.")
 
     return 0
-
+# alias so external callers (run_once.py) can do `from agent import cycle`
+cycle = main
 
 if __name__ == "__main__":
     raise SystemExit(main())
