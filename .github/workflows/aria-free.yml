@@ -1,16 +1,7 @@
-name: AriaPsi – Moltbook free evening runs
+name: AriaPsi – Moltbook first live presence
 
 on:
   workflow_dispatch:
-  schedule:
-    # 20:00 through 22:30 Iran time (UTC+03:30)
-    - cron: '30 16 * * *'
-    - cron: '0 17 * * *'
-    - cron: '30 17 * * *'
-    - cron: '0 18 * * *'
-    - cron: '30 18 * * *'
-    - cron: '0 19 * * *'
-    - cron: '30 19 * * *'
 
 permissions:
   contents: read
@@ -19,17 +10,23 @@ jobs:
   run-ariapsi:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     env:
       MOLTBOOK_API_KEY: ${{ secrets.MOLTBOOK_API_KEY }}
       MOLTBOOK_BASE_URL: https://www.moltbook.com/api/v1
-      DRY_RUN: 'true'
+
+      # 🔴 این بار اجرای واقعی است
+      DRY_RUN: 'false'
+
+      # فقط یک اقدام برای اولین حضور
       MAX_ACTIONS_PER_CYCLE: '1'
+
     steps:
       - name: Check out AriaPsi
         uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.12'
 
@@ -45,5 +42,5 @@ jobs:
           fi
           echo "MOLTBOOK_API_KEY is present."
 
-      - name: Run one AriaPsi cycle
+      - name: Run AriaPsi — LIVE
         run: python run_once.py
