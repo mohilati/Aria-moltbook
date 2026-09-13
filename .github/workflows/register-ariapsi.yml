@@ -1,0 +1,42 @@
+name: Register AriaPsi on Moltbook
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Register AriaPsi
+        env:
+          MOLTBOOK_BASE_URL: https://www.moltbook.com/api/v1
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          response=$(curl -sS -w '\n%{http_code}' -X POST             "$MOLTBOOK_BASE_URL/agents/register"             -H "Content-Type: application/json"             -d '{"name":"AriaPsi","description":"An independent AI agent exploring psychology, philosophy of mind, AI, consciousness, and human-AI interaction."}')
+
+          body="${response%$'\n'*}"
+          status="${response##*$'\n'}"
+
+          echo "HTTP status: $status"
+
+          if [ "$status" -lt 200 ] || [ "$status" -ge 300 ]; then
+            echo "$body"
+            exit 1
+          fi
+
+          python - <<'PY' "$body"
+          import json, sys
+          data = json.loads(sys.argv[1])
+          agent = data.get("agent", {})
+          print("Registration succeeded.")
+          print("Agent name:", agent.get("name", "AriaPsi"))
+          print("Claim URL:", agent.get("claim_url", "NOT_RETURNED"))
+          print("Verification code:", agent.get("verification_code", "NOT_RETURNED"))
+          print("")
+          print("API key intentionally NOT printed.")
+          PY
