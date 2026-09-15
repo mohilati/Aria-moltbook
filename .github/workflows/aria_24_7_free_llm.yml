@@ -1,7 +1,8 @@
-name: AriaPsi 24/7 Free LLM
 concurrency:
   group: aria-moltbook-main
   cancel-in-progress: false
+name: AriaPsi 24/7 Free LLM
+
 on:
   workflow_dispatch:
   schedule:
