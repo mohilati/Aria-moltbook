@@ -1,5 +1,7 @@
 name: AriaPsi 24/7 Free LLM
-
+concurrency:
+  group: aria-moltbook-main
+  cancel-in-progress: false
 on:
   workflow_dispatch:
   schedule:
@@ -62,3 +64,13 @@ jobs:
               git push
             fi
           fi
+git add aria_memory.json
+
+if ! git diff --cached --quiet; then
+  git commit -m "chore: persist AriaPsi memory"
+
+  git fetch origin main
+  git rebase origin/main
+
+  git push origin HEAD:main
+fi
