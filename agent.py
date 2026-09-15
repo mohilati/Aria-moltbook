@@ -1097,3 +1097,4 @@ def parse_json_object(
 
         raise ValueError(
             "LLM response was not a JSON object."
+        )
