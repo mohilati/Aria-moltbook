@@ -31,6 +31,15 @@ POST_EVERY_CYCLES = max(1, int(os.getenv("POST_EVERY_CYCLES", "1")))
 FOLLOW_AUTHORS = os.getenv("FOLLOW_AUTHORS", "true").lower() in {"1", "true", "yes"}
 MAX_FOLLOWS_PER_CYCLE = max(0, int(os.getenv("MAX_FOLLOWS_PER_CYCLE", "1")))
 
+# Activity settings
+# Safety cap on comments per UTC day. Moltbook publishes limits of 1 comment
+# per 20 seconds; the daily cap is documented inconsistently (20-50), so we stay low.
+DAILY_COMMENT_LIMIT = max(1, int(os.getenv("DAILY_COMMENT_LIMIT", "40")))
+# Pause between two comments in the same run (seconds, must be > 20).
+COMMENT_GAP_SECONDS = max(25, int(os.getenv("COMMENT_GAP_SECONDS", "30")))
+POSTS_LIMIT = max(10, min(100, int(os.getenv("POSTS_LIMIT", "50"))))
+UPVOTE_POSTS = os.getenv("UPVOTE_POSTS", "true").lower() in {"1", "true", "yes"}
+
 MEMORY_FILE = Path("aria_memory.json")
 
 TEMPORARY_STATUS = {429, 500, 502, 503, 504}
@@ -602,8 +611,32 @@ def follow_agent(client: httpx.Client, name: str | None, my_name: str, memory: d
     return True
 
 
+def upvote_post(client: httpx.Client, pid: str) -> bool:
+    try:
+        response = client.post(f"{BASE_URL}/posts/{pid}/upvote")
+        response.raise_for_status()
+        print(f"Upvoted post {pid}.")
+        return True
+    except httpx.HTTPError as error:
+        print(f"Upvote failed for {pid}: {error}")
+        return False
+
+
+def comments_today(memory: dict[str, Any]) -> int:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    record = memory.get("daily_comments")
+    if isinstance(record, dict) and record.get("date") == today:
+        return int(record.get("count", 0))
+    return 0
+
+
+def count_comment(memory: dict[str, Any]) -> None:
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    memory["daily_comments"] = {"date": today, "count": comments_today(memory) + 1}
+
+
 def get_posts(client: httpx.Client) -> list[dict[str, Any]]:
-    response = client.get(f"{BASE_URL}/posts", params={"sort": "new", "limit": 25})
+    response = client.get(f"{BASE_URL}/posts", params={"sort": "new", "limit": POSTS_LIMIT})
     response.raise_for_status()
     data = response.json()
 
@@ -706,54 +739,70 @@ def main() -> int:
         actions = 0
         follows = 0
 
-        post, topic, score = select_post(posts, seen)
+        print(f"Comments today so far: {comments_today(memory)}/{DAILY_COMMENT_LIMIT}")
 
-        if post and topic and actions < MAX_ACTIONS:
+        for slot in range(MAX_ACTIONS):
+
+            if comments_today(memory) >= DAILY_COMMENT_LIMIT:
+                print("Daily comment limit reached; no more comments today.")
+                break
+
+            post, topic, score = select_post(posts, seen)
+
+            if not post or not topic:
+                print("No more suitable posts to comment on.")
+                break
+
             pid = post_id(post)
+            if not pid:
+                break
 
-            if pid:
-                try:
-                    if ai:
-                        comment = make_comment(ai, post, recent)
-                    else:
-                        # No hard-coded fallback comment: never publish repeated text.
-                        print("Gemini unavailable; skipping comment instead of posting a repeated fallback.")
-                        comment = None
+            try:
+                if not ai:
+                    print("No AI provider available; skipping comments.")
+                    break
 
-                    if not comment:
-                        seen.add(pid)
-                    else:
-                        print(f"Selected post={pid} topic={topic} score={score}")
-                        print("Comment:", comment)
+                comment = make_comment(ai, post, recent)
 
-                        if DRY_RUN:
-                            posted = True
-                            print("DRY_RUN=true - comment was not posted.")
-                        else:
-                            posted = post_comment(client, pid, comment, memory)
-                            if posted:
-                                print("Comment posted.")
-                            else:
-                                print("Comment was not posted; continuing safely.")
+                print(f"Selected post={pid} topic={topic} score={score}")
+                print("Comment:", comment)
 
-                        if posted:
-                            seen.add(pid)
-                            recent = (recent + [comment])[-20:]
-                            actions += 1
+                if DRY_RUN:
+                    posted = True
+                    print("DRY_RUN=true - comment was not posted.")
+                else:
+                    posted = post_comment(client, pid, comment, memory)
+                    print("Comment posted." if posted else "Comment was not posted; stopping this cycle.")
 
-                            # NEW: follow the author of the post we commented on.
-                            author = post_author_name(post)
-                            print("Post author:", author)
+                if not posted:
+                    break
 
-                            if DRY_RUN:
-                                if author and FOLLOW_AUTHORS:
-                                    print(f"DRY_RUN=true - would follow {author}.")
-                            elif follows < MAX_FOLLOWS_PER_CYCLE:
-                                if follow_agent(client, author, my_name, memory):
-                                    follows += 1
+                seen.add(pid)
+                recent = (recent + [comment])[-20:]
+                actions += 1
+                if not DRY_RUN:
+                    count_comment(memory)
 
-                except Exception as error:
-                    print(f"Comment generation failed: {error!r}")
+                if UPVOTE_POSTS and not DRY_RUN:
+                    upvote_post(client, pid)
+
+                author = post_author_name(post)
+                print("Post author:", author)
+
+                if DRY_RUN:
+                    if author and FOLLOW_AUTHORS:
+                        print(f"DRY_RUN=true - would follow {author}.")
+                elif follows < MAX_FOLLOWS_PER_CYCLE:
+                    if follow_agent(client, author, my_name, memory):
+                        follows += 1
+
+            except Exception as error:
+                print(f"Comment generation failed: {error!r}")
+                break
+
+            # Moltbook allows 1 comment per 20 seconds: wait before the next one.
+            if slot < MAX_ACTIONS - 1 and not DRY_RUN:
+                time.sleep(COMMENT_GAP_SECONDS)
 
         if should_create_post(memory):
             try:
