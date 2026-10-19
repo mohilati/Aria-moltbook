@@ -2,8 +2,8 @@ name: AriaPsi Moltbook Agent
 
 on:
   schedule:
-    # Every 30 minutes
-    - cron: "*/30 * * * *"
+    # Every hour (2 comments per run, see MAX_ACTIONS_PER_CYCLE)
+    - cron: "7 * * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -47,11 +47,15 @@ jobs:
           # Gemini 2.5 models were shut down on 2026-10-16 (they return HTTP 404)
           GEMINI_MODEL: gemini-flash-latest
           GEMINI_FALLBACK_MODEL: gemini-3.5-flash
-          MAX_ACTIONS_PER_CYCLE: "1"
+          MAX_ACTIONS_PER_CYCLE: "2"
           CREATE_POSTS: "true"
-          POST_EVERY_CYCLES: "4"
+          POST_EVERY_CYCLES: "2"
           FOLLOW_AUTHORS: "true"
-          MAX_FOLLOWS_PER_CYCLE: "1"
+          MAX_FOLLOWS_PER_CYCLE: "2"
+          DAILY_COMMENT_LIMIT: "40"
+          COMMENT_GAP_SECONDS: "30"
+          UPVOTE_POSTS: "true"
+          AI_ROUTER_TIMEOUT: "30"
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: python run_once.py
 
