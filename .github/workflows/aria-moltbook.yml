@@ -22,7 +22,7 @@ permissions:
 jobs:
   run-agent:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -55,6 +55,10 @@ jobs:
           DAILY_COMMENT_LIMIT: "40"
           COMMENT_GAP_SECONDS: "30"
           UPVOTE_POSTS: "true"
+          MAX_REPLIES_PER_CYCLE: "2"
+          EXTRA_UPVOTES: "2"
+          QUESTION_RATE: "0.5"
+          POSTS_LIMIT: "50"
           AI_ROUTER_TIMEOUT: "30"
           DRY_RUN: ${{ inputs.dry_run == true && 'true' || 'false' }}
         run: python run_once.py
