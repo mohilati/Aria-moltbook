@@ -12,11 +12,13 @@ from typing import Any
 
 import httpx
 
+from ai_router import llm_text
+
 BASE_URL = os.getenv("MOLTBOOK_BASE_URL", "https://www.moltbook.com/api/v1").rstrip("/")
 
 MOLTBOOK_API_KEY = os.getenv("MOLTBOOK_API_KEY", "").strip()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-flash-latest").strip()
 GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-2.5-flash-lite").strip()
 GEMINI_TIMEOUT = float(os.getenv("GEMINI_TIMEOUT", "45"))
 
@@ -249,122 +251,17 @@ def select_post(
     return post, topic, score
 
 
-# ---------------------------------------------------------------- Gemini
+# ---------------------------------------------------------------- AI router
+# All model calls go through ai_router.py (Gemini, Groq, OpenRouter, Cerebras
+# with automatic failover).
 
 def llm_client() -> bool:
-    return bool(GEMINI_API_KEY)
-
-
-def _gemini_request(model: str, system: str, user: str, max_output_tokens: int) -> str:
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-
-    payload = {
-        "systemInstruction": {"parts": [{"text": system}]},
-        "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {
-            "maxOutputTokens": max_output_tokens,
-            "temperature": 1.0,
-        },
-    }
-
-    timeout = httpx.Timeout(GEMINI_TIMEOUT, connect=10.0)
-
-    with httpx.Client(timeout=timeout) as client:
-        response = client.post(url, params={"key": GEMINI_API_KEY}, json=payload)
-
-        if response.status_code in TEMPORARY_STATUS:
-            raise httpx.HTTPStatusError(
-                "temporary Gemini error",
-                request=response.request,
-                response=response,
-            )
-
-        response.raise_for_status()
-        data = response.json()
-
-    candidates = data.get("candidates") or []
-    if not candidates:
-        raise RuntimeError(f"Gemini returned no candidates: {data}")
-
-    candidate = candidates[0]
-    parts = (candidate.get("content") or {}).get("parts") or []
-
-    text = "\n".join(
-        str(part.get("text", "")).strip()
-        for part in parts
-        if isinstance(part, dict) and part.get("text")
-    ).strip()
-
-    if not text:
-        raise RuntimeError(
-            "Gemini returned no usable text "
-            f"(finishReason={candidate.get('finishReason')}): {data}"
-        )
-
-    return text
-
-
-def llm_text(client: bool, system: str, user: str, max_output_tokens: int = 220) -> str:
-    if not client or not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is missing.")
-
-    models = [GEMINI_MODEL]
-    if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL not in models:
-        models.append(GEMINI_FALLBACK_MODEL)
-
-    last_error = None
-
-    for model_index, model in enumerate(models):
-        for attempt in range(1, 4):
-            try:
-                budget = max_output_tokens
-                if max_output_tokens >= 400 and attempt > 1:
-                    budget *= 2
-
-                result = _gemini_request(model, system, user, min(budget, 1400))
-
-                if model != GEMINI_MODEL:
-                    print(f"Gemini fallback succeeded with model={model}")
-
-                return result
-
-            except httpx.HTTPStatusError as error:
-                last_error = error
-                code = error.response.status_code
-
-                if code not in TEMPORARY_STATUS:
-                    print(f"Gemini permanent HTTP error: model={model} HTTP {code}")
-                    break
-
-                body = error.response.text[:400].replace("\n", " ")
-                print(
-                    f"Gemini temporary error: model={model} HTTP {code}, "
-                    f"attempt={attempt}/3 - {body}"
-                )
-                if attempt < 3:
-                    time.sleep(2 ** (attempt - 1))
-
-            except (httpx.TimeoutException, httpx.RequestError) as error:
-                last_error = error
-                print(
-                    f"Gemini network/timeout error: model={model}, "
-                    f"attempt={attempt}/3 - {error!r}"
-                )
-                if attempt < 3:
-                    time.sleep(2 ** (attempt - 1))
-
-            except RuntimeError as error:
-                last_error = error
-                print(
-                    f"Gemini response problem: model={model}, "
-                    f"attempt={attempt}/3 - {error}"
-                )
-                break
-
-        if model_index < len(models) - 1:
-            print(f"Trying Gemini fallback model: {GEMINI_FALLBACK_MODEL}")
-
-    raise RuntimeError(f"All Gemini models failed after retries: {last_error!r}")
+    return bool(
+        os.getenv("GEMINI_API_KEY", "").strip()
+        or os.getenv("GROQ_API_KEY", "").strip()
+        or os.getenv("OPENROUTER_API_KEY", "").strip()
+        or os.getenv("CEREBRAS_API_KEY", "").strip()
+    )
 
 
 # ---------------------------------------------------------------- comments
@@ -380,30 +277,32 @@ def opening(text: str, n: int = 3) -> str:
     return " ".join(normalize(text).split()[:n])
 
 
-def valid_comment(text: str, post: dict[str, Any], recent: list[str]) -> bool:
+def comment_problem(text: str, post: dict[str, Any], recent: list[str]) -> str | None:
+    """Return the reason a comment is rejected, or None if it is fine."""
     raw = text.strip()
     normalized = normalize(raw)
     words = normalized.split()
 
-    if len(words) < 60 or len(words) > 220:
-        return False
+    if len(words) < 60:
+        return f"too short ({len(words)} words, need 60+)"
+    if len(words) > 220:
+        return f"too long ({len(words)} words)"
 
     if len(re.findall(r"[.!?؟]", raw)) < 2:
-        return False
+        return "fewer than 2 sentences"
 
     if raw.endswith((",", ":", ";", "—", "-")):
-        return False
+        return "ends mid-sentence (cut off)"
 
     if normalized in PLACEHOLDERS or normalized.startswith(
         ("drafting the response", "here is", "thinking", "great post", "interesting post")
     ):
-        return False
+        return "placeholder or filler opening"
 
-    # NEW: reject the overused template.
     if normalized.startswith(BANNED_OPENERS):
-        return False
+        return "starts with a banned opener (Treating / This matters because)"
     if any(phrase in normalized for phrase in BANNED_PHRASES):
-        return False
+        return "contains the banned phrase 'this matters because'"
 
     post_words = set(normalize(post_text(post)).split())
     meaningful = {word for word in set(words) if len(word) >= 4}
@@ -417,17 +316,16 @@ def valid_comment(text: str, post: dict[str, Any], recent: list[str]) -> bool:
     )
 
     if overlap < 2 and not topic_hit:
-        return False
+        return "does not engage with the post (no shared words or topic)"
 
     old_comments = [normalize(comment) for comment in recent[-20:]]
 
     if normalized in old_comments:
-        return False
+        return "exact duplicate of an earlier comment"
 
-    # NEW: the first two words must differ from recent comments' openings.
     old_openers = {" ".join(old.split()[:2]) for old in old_comments if old}
     if " ".join(words[:2]) in old_openers:
-        return False
+        return f"opening words '{' '.join(words[:2])}' were used recently"
 
     word_set = set(words)
     for old in old_comments:
@@ -437,9 +335,13 @@ def valid_comment(text: str, post: dict[str, Any], recent: list[str]) -> bool:
             and len(old_words) >= 12
             and len(word_set & old_words) / len(word_set) >= 0.80
         ):
-            return False
+            return "too similar to an earlier comment"
 
-    return True
+    return None
+
+
+def valid_comment(text: str, post: dict[str, Any], recent: list[str]) -> bool:
+    return comment_problem(text, post, recent) is None
 
 
 def make_comment(ai: bool, post: dict[str, Any], recent: list[str]) -> str:
@@ -490,10 +392,12 @@ STRICT REQUIREMENTS:
     for attempt in range(4):
         result = llm_text(ai, SYSTEM_PROMPT, prompt, 420).strip()
 
-        if valid_comment(result, post, recent):
+        problem = comment_problem(result, post, recent)
+        if problem is None:
             return result
 
-        print(f"Rejected low-quality/duplicate comment (attempt {attempt + 1}/4).")
+        print(f"Rejected comment (attempt {attempt + 1}/4): {problem}")
+        print(f"  Rejected text started with: {result[:120]!r}")
 
         prompt += f"""
 The previous answer failed validation.
@@ -717,7 +621,7 @@ def get_posts(client: httpx.Client) -> list[dict[str, Any]]:
 def should_create_post(memory: dict[str, Any]) -> bool:
     return (
         CREATE_POSTS
-        and bool(GEMINI_API_KEY)
+        and llm_client()
         and int(memory.get("cycle_count", 0)) % POST_EVERY_CYCLES == 0
     )
 

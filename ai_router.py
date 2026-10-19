@@ -72,7 +72,7 @@ def _gemini_once(model: str, system: str, user: str, max_tokens: int) -> str:
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
         "generationConfig": {
-            "maxOutputTokens": min(max_tokens, 1400),
+            "maxOutputTokens": min(max_tokens * 4, 2400),
             "temperature": 1.0,
         },
     }
