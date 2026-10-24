@@ -66,6 +66,13 @@ PLACEHOLDERS = {
 BANNED_OPENERS = ("treating", "treat ", "this matters because")
 BANNED_PHRASES = ("this matters because",)
 
+# The agent must not invent personal experience or capabilities.
+FIRST_PERSON_CLAIMS = re.compile(
+    r"\b(in my experience|my agent|my pipeline|my system|my own (memory|context|logic)|"
+    r"when i (query|run|process|evaluate|build|test)|i (built|implemented|tested|measured|deployed)|"
+    r"my routing logic|my execution)\b"
+)
+
 # A different style is picked at random for every comment, so the
 # comments stop sharing one template.
 STYLES = [
@@ -323,6 +330,10 @@ def comment_problem(text: str, post: dict[str, Any], recent: list[str]) -> str |
     ):
         return "placeholder or filler opening"
 
+    if FIRST_PERSON_CLAIMS.search(raw.lower()):
+        return "claims personal experience or abilities"
+    if raw.count("—") > 1:
+        return "too many em dashes (formulaic definitions)"
     if normalized.startswith(BANNED_OPENERS):
         return "starts with a banned opener (Treating / This matters because)"
     if any(phrase in normalized for phrase in BANNED_PHRASES):
@@ -408,7 +419,8 @@ STRICT REQUIREMENTS:
 - NEVER use the phrase "This matters because".
 - Do not use the pattern "X ignores how Y. This matters because Z. If A, how can B?".
 - {ending_rule}
-- Explain any technical term in plain words in the same sentence.
+- If a technical term needs explaining, do it at most ONCE, in a short plain clause. Do NOT use the pattern "term—definition—"; use at most one em dash in the whole comment.
+- Never claim personal experience, a build, a test or a system of your own. Speak about ideas, not about your own setup.
 - Vary sentence structure.
 - No greeting.
 - No praise-only filler.
@@ -887,6 +899,10 @@ def reply_problem(text: str, recent_replies: list[str]) -> str | None:
         return "banned template phrase"
     if normalized.startswith(("great point", "thanks for", "thank you", "interesting point")):
         return "filler opening"
+    if FIRST_PERSON_CLAIMS.search(raw.lower()):
+        return "claims personal experience or abilities"
+    if raw.count("—") > 1:
+        return "too many em dashes"
     old = [normalize(r) for r in recent_replies[-20:]]
     if normalized in old:
         return "duplicate reply"
@@ -930,7 +946,7 @@ REQUIREMENTS:
 - 35-90 words, 2-4 complete sentences.
 - Respond to the specific point they made. Say what you agree with or where you see it differently, and why.
 - Add one new idea, example or distinction. Do not just repeat their point or praise it.
-- Plain, warm, direct tone. Explain any technical term briefly.
+- Plain, warm, direct tone. At most one em dash. Never claim personal experience or a system of your own.
 - {ending}
 - Same language as their comment.
 - Never start with "Treating", "Great point", "Thanks for" or "This matters because".
@@ -1090,7 +1106,7 @@ def main() -> int:
     memory = load_memory()
     memory["cycle_count"] = int(memory.get("cycle_count", 0)) + 1
 
-    seen = set(map(str, memory.get("seen_posts", [])))
+    seen = dict.fromkeys(map(str, memory.get("seen_posts", [])))  # ordered, keeps newest
     recent = list(map(str, memory.get("recent_comments", [])))
 
     # NEW: automatically drop old template comments ("Treating ...") from memory
@@ -1177,7 +1193,10 @@ def main() -> int:
                 print("Daily comment limit reached; no more comments today.")
                 break
 
-            post, topic, score = select_post(posts, seen)
+            already = set(seen) | {
+                str(t.get("id")) for t in memory.get("threads", []) if isinstance(t, dict)
+            }
+            post, topic, score = select_post(posts, already)
 
             if not post or not topic:
                 print("No more suitable posts to comment on.")
@@ -1207,7 +1226,7 @@ def main() -> int:
                 if not posted:
                     break
 
-                seen.add(pid)
+                seen[pid] = None
                 recent = (recent + [comment])[-20:]
                 actions += 1
                 add_thread(memory, pid, own=False)
@@ -1270,7 +1289,7 @@ def main() -> int:
             except Exception as error:
                 print(f"Original-post generation failed: {error!r}")
 
-    memory["seen_posts"] = list(seen)[-100:]
+    memory["seen_posts"] = list(seen)[-400:]
     memory["recent_comments"] = recent[-20:]
 
     save_memory(memory)
