@@ -45,11 +45,11 @@ jobs:
           OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           # Gemini 2.5 models were shut down on 2026-10-16 (they return HTTP 404)
-          GEMINI_MODEL: gemini-flash-latest
-          GEMINI_FALLBACK_MODEL: gemini-3.5-flash
+          GEMINI_MODEL: gemini-3.5-flash
+          GEMINI_FALLBACK_MODEL: gemini-flash-latest
           MAX_ACTIONS_PER_CYCLE: "2"
           CREATE_POSTS: "true"
-          POST_EVERY_CYCLES: "2"
+          POST_INTERVAL_HOURS: "3"
           FOLLOW_AUTHORS: "true"
           MAX_FOLLOWS_PER_CYCLE: "2"
           DAILY_COMMENT_LIMIT: "40"
