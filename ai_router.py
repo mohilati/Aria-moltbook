@@ -36,6 +36,10 @@ DISABLE_STATUS = {400, 401, 402, 403, 404}
 RETRIES = 2  # attempts per provider for temporary errors
 
 _disabled: set[str] = set()
+# Providers / models that failed temporarily in this run: tried last next time,
+# so one overloaded model does not slow down every single call.
+_slow_providers: set[str] = set()
+_slow_models: set[str] = set()
 
 
 def _http_error(name: str, response: httpx.Response) -> httpx.HTTPStatusError:
@@ -102,6 +106,7 @@ def _gemini(system: str, user: str, max_tokens: int) -> str:
     models = [GEMINI_MODEL]
     if GEMINI_FALLBACK_MODEL and GEMINI_FALLBACK_MODEL not in models:
         models.append(GEMINI_FALLBACK_MODEL)
+    models.sort(key=lambda m: m in _slow_models)  # models that failed earlier go last
 
     last_error: Exception | None = None
     for model in models:
@@ -109,9 +114,11 @@ def _gemini(system: str, user: str, max_tokens: int) -> str:
             return _with_retries("gemini", lambda m=model: _gemini_once(m, system, user, max_tokens))
         except httpx.HTTPStatusError as error:
             last_error = error
+            _slow_models.add(model)
             print(f"AI router: gemini model={model} failed with HTTP {error.response.status_code}")
         except (httpx.TimeoutException, httpx.RequestError) as error:
             last_error = error
+            _slow_models.add(model)
             print(f"AI router: gemini model={model} network error")
     assert last_error is not None
     raise last_error
@@ -254,6 +261,8 @@ def _available_providers() -> list[tuple[str, Callable[[str, str, int], str]]]:
     ordered = [table[name] for name in PROVIDER_ORDER if name in table]
     # Any configured provider missing from AI_PROVIDER_ORDER goes last.
     ordered += [item for name, item in table.items() if name not in PROVIDER_ORDER]
+    # Providers that had temporary trouble earlier in this run are tried last.
+    ordered.sort(key=lambda item: item[0] in _slow_providers)
     return ordered
 
 
@@ -287,6 +296,7 @@ def llm_text(client: bool, system: str, user: str, max_output_tokens: int = 220)
             last_error = error
             code = error.response.status_code
             print(f"AI router: provider={name} HTTP {code}; failover")
+            _slow_providers.add(name)
             if code in DISABLE_STATUS:
                 _disabled.add(name)
                 print(f"AI router: provider={name} disabled for the rest of this run")
@@ -294,6 +304,7 @@ def llm_text(client: bool, system: str, user: str, max_output_tokens: int = 220)
         except (httpx.TimeoutException, httpx.RequestError) as error:
             last_error = error
             print(f"AI router: provider={name} network error; failover")
+            _slow_providers.add(name)
 
         except Exception as error:  # noqa: BLE001
             last_error = error

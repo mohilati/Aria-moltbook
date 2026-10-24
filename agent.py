@@ -635,8 +635,19 @@ def post_comment(
         return True
 
     except httpx.HTTPError as error:
-        print(f"Comment publish failed: {error}")
+        print(f"Comment publish failed: {_error_detail(error)}")
         return False
+
+
+def _error_detail(error: Exception) -> str:
+    """Short text of an HTTP error including what the server said."""
+    response = getattr(error, "response", None)
+    if response is not None:
+        try:
+            return f"HTTP {response.status_code}: {response.text[:300]}"
+        except Exception:
+            return f"HTTP {response.status_code}"
+    return repr(error)
 
 
 def publish_post(
@@ -647,34 +658,44 @@ def publish_post(
     memory: dict[str, Any],
 ) -> str | bool:
     """Publish a post. Returns the new post id (str) if known, True if
-    published without a readable id, False on failure."""
-    try:
-        response = client.post(
-            f"{BASE_URL}/posts",
-            json={"title": title, "content": content, "submolt": submolt},
-        )
+    published without a readable id, False on failure. If the chosen submolt
+    is rejected, the post is retried once in m/general."""
+    targets = [submolt] if submolt == "general" else [submolt, "general"]
 
-        if is_suspended(response):
-            _record_suspension(response, memory)
-            return False
-
-        response.raise_for_status()
-
+    for target in targets:
         try:
-            data = response.json()
-            if isinstance(data, dict):
-                inner = data.get("post") if isinstance(data.get("post"), dict) else data
-                found = post_id(inner) or post_id(data)
-                if found:
-                    return found
-        except Exception:
-            pass
+            response = client.post(
+                f"{BASE_URL}/posts",
+                json={"title": title, "content": content, "submolt": target},
+            )
 
-        return True
+            if is_suspended(response):
+                _record_suspension(response, memory)
+                return False
 
-    except httpx.HTTPError as error:
-        print(f"Original post publish failed: {error}")
-        return False
+            response.raise_for_status()
+
+            try:
+                data = response.json()
+                if isinstance(data, dict):
+                    inner = data.get("post") if isinstance(data.get("post"), dict) else data
+                    found = post_id(inner) or post_id(data)
+                    if found:
+                        return found
+            except Exception:
+                pass
+
+            return True
+
+        except httpx.HTTPError as error:
+            print(f"Original post publish failed (m/{target}): {_error_detail(error)}")
+            code = getattr(getattr(error, "response", None), "status_code", None)
+            # Only try another submolt for client errors (bad/unknown submolt),
+            # never for rate limits or server problems.
+            if code not in {400, 404, 422}:
+                return False
+
+    return False
 
 
 def follow_agent(client: httpx.Client, name: str | None, my_name: str, memory: dict[str, Any]) -> bool:
@@ -699,7 +720,7 @@ def follow_agent(client: httpx.Client, name: str | None, my_name: str, memory: d
         response.raise_for_status()
 
     except httpx.HTTPError as error:
-        print(f"Follow failed for {name}: {error}")
+        print(f"Follow failed for {name}: {_error_detail(error)}")
         return False
 
     memory["followed_agents"] = (list(memory.get("followed_agents", [])) + [name])[-500:]
@@ -714,7 +735,7 @@ def upvote_post(client: httpx.Client, pid: str) -> bool:
         print(f"Upvoted post {pid}.")
         return True
     except httpx.HTTPError as error:
-        print(f"Upvote failed for {pid}: {error}")
+        print(f"Upvote failed for {pid}: {_error_detail(error)}")
         return False
 
 
@@ -1089,12 +1110,28 @@ def get_posts(client: httpx.Client) -> list[dict[str, Any]]:
     return []
 
 
+POST_INTERVAL_HOURS = max(0.5, float(os.getenv("POST_INTERVAL_HOURS", "3")))
+
+
 def should_create_post(memory: dict[str, Any]) -> bool:
-    return (
-        CREATE_POSTS
-        and llm_client()
-        and int(memory.get("cycle_count", 0)) % POST_EVERY_CYCLES == 0
-    )
+    """Post when enough time passed since the last published post.
+    (Time-based, so failed runs or skipped schedules never block posting.)"""
+    if not CREATE_POSTS:
+        print("Original posts: disabled (CREATE_POSTS=false).")
+        return False
+    if not llm_client():
+        print("Original posts: skipped (no AI provider).")
+        return False
+
+    last = memory.get("last_post_ts")
+    if isinstance(last, (int, float)):
+        hours = (time.time() - float(last)) / 3600
+        if hours < POST_INTERVAL_HOURS:
+            print(f"Original posts: not yet ({hours:.1f}h since last post, interval {POST_INTERVAL_HOURS}h).")
+            return False
+
+    print("Original posts: time to publish a new post.")
+    return True
 
 
 # ---------------------------------------------------------------- main
@@ -1274,6 +1311,7 @@ def main() -> int:
 
                 elif (published := publish_post(client, title, content, submolt, memory)):
                     print(f"Original post published: {title}")
+                    memory["last_post_ts"] = time.time()
                     memory["created_post_titles"] = (
                         list(memory.get("created_post_titles", [])) + [title]
                     )[-30:]
